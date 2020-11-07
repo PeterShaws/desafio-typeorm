@@ -72,7 +72,7 @@ class CreateTransactionService {
       case type === 'outcome':
         balance = await this.transactionsRepository.getBalance();
         if (value > balance.total) {
-          return new AppError('Excessive outcome', 409);
+          return new AppError('Excessive outcome');
         }
         break;
       default:
