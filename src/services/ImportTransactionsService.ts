@@ -1,10 +1,10 @@
 import csvParse from 'csv-parse';
 import fs from 'fs';
-import { Any, getRepository, Repository } from 'typeorm';
+import { Any, getCustomRepository, getRepository, Repository } from 'typeorm';
 import AppError from '../errors/AppError';
 import Category from '../models/Category';
 import Transaction from '../models/Transaction';
-import CreateTransactionService from './CreateTransactionService';
+import TransactionsRepository from '../repositories/TransactionsRepository';
 
 interface TransactionData {
   title: string;
@@ -16,11 +16,11 @@ interface TransactionData {
 class ImportTransactionsService {
   private categoriesRepository: Repository<Category>;
 
-  private createTransactionService: CreateTransactionService;
+  private transactionsRepository: TransactionsRepository;
 
   constructor() {
     this.categoriesRepository = getRepository(Category);
-    this.createTransactionService = new CreateTransactionService();
+    this.transactionsRepository = getCustomRepository(TransactionsRepository);
   }
 
   async execute(file: Express.Multer.File): Promise<Transaction[]> {
@@ -30,54 +30,63 @@ class ImportTransactionsService {
         throw new AppError('Invalid file type.');
       }
 
-      const data = await this.loadCSV(file.path);
-      await this.saveCategories(data);
-      const transactions = await this.saveTransactions(data);
-      await fs.promises.unlink(file.path);
-
-      return transactions;
+      try {
+        const data = await this.loadCSV(file.path);
+        const categories = await this.saveCategories(data);
+        const transactions = await this.saveTransactions(data, categories);
+        await fs.promises.unlink(file.path);
+        return transactions;
+      } catch (error) {
+        if (error instanceof AppError) {
+          throw error;
+        } else {
+          throw new AppError(error.message, 500);
+        }
+      }
     }
     throw new AppError('Missing file.');
   }
 
-  private async saveCategories(data: TransactionData[]): Promise<void> {
-    // deduplicate category titles
-    const titles = data
-      .map(row => row.category)
-      .sort()
-      .filter((e, i, a) => !i || e !== a[i - 1]);
+  private async saveCategories(data: TransactionData[]): Promise<Category[]> {
+    try {
+      const titles = data
+        .map(row => row.category)
+        .filter((title, index, _titles) => _titles.indexOf(title) === index);
+      const foundCategories = await this.categoriesRepository.find({
+        title: Any(titles),
+      });
+      const newTitles = titles.filter(
+        title =>
+          !foundCategories.some(foundCategory => foundCategory.title === title),
+      );
 
-    // look up the titles in the repository...
-    const foundCategories = await this.categoriesRepository.find({
-      title: Any(titles),
-    });
-    // ...then filter out those that already exist
-    const newTitles = titles.filter(
-      title =>
-        !foundCategories.some(foundCategory => foundCategory.title === title),
-    );
-
-    // create the new categories...
-    const newCategories$ = newTitles.map(title => {
-      const newCategory = this.categoriesRepository.create({ title });
-      return this.categoriesRepository.save(newCategory);
-    });
-    // ...then save them in parallel
-    await Promise.all(newCategories$);
+      const newCategories = this.categoriesRepository.create(
+        newTitles.map(title => ({ title })),
+      );
+      await this.categoriesRepository.save(newCategories);
+      return [...foundCategories, ...newCategories];
+    } catch (error) {
+      throw new AppError(error.message, 500);
+    }
   }
 
   private async saveTransactions(
     data: TransactionData[],
+    categories: Category[],
   ): Promise<Transaction[]> {
     try {
-      const transactions$: Promise<Transaction>[] = [];
-      data.forEach(row => {
-        const transaction$ = this.createTransactionService.execute(row, true);
-        transactions$.push(transaction$);
-      });
-      return await Promise.all(transactions$);
-    } catch (err) {
-      throw new AppError('Can’t load CSV file', 500);
+      const transactions = this.transactionsRepository.create(
+        data.map(transaction => ({
+          ...transaction,
+          category: categories.find(
+            category => category.title === transaction.category,
+          ),
+        })),
+      );
+      await this.transactionsRepository.save(transactions);
+      return transactions;
+    } catch (error) {
+      throw new AppError(error.message, 500);
     }
   }
 
@@ -89,7 +98,10 @@ class ImportTransactionsService {
     const data: TransactionData[] = [];
     parseCSV.on('data', (row: string[]) => {
       const [title, type, value, category] = row;
-      return data.push({
+      if (!title || !type || !value || !category) {
+        return;
+      }
+      data.push({
         title,
         type: type as 'income' | 'outcome',
         value: +value,

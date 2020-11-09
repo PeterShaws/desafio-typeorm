@@ -26,7 +26,7 @@ class TransactionsRepository extends Repository<Transaction> {
   ): number {
     return transactions
       .filter(transaction => transaction.type === type)
-      .map(transaction => transaction.value)
+      .map(transaction => +transaction.value)
       .reduce((total, value) => total + value, 0);
   }
 }

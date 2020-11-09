@@ -38,7 +38,7 @@ class CreateTransactionService {
         title,
         value,
         type,
-        category_id: transactionCategory.id,
+        category: transactionCategory,
       });
       await this.transactionsRepository.save(transaction);
       transaction.category = transactionCategory;
@@ -47,10 +47,12 @@ class CreateTransactionService {
     throw validationError;
   }
 
-  private async validateRequest(
-    { title, value, type, category }: Request,
-    ignoreBalance = false,
-  ): Promise<AppError | null> {
+  private async validateRequest({
+    title,
+    value,
+    type,
+    category,
+  }: Request): Promise<AppError | null> {
     let balance: Balance;
     switch (true) {
       case !this.assertAttributes({ title, value, type, category }):
@@ -63,7 +65,7 @@ class CreateTransactionService {
         return new AppError('Invalid transaction type');
       case Number.isNaN(+value) || +value <= 0:
         return new AppError('Invalid value');
-      case type === 'outcome' && !ignoreBalance:
+      case type === 'outcome':
         balance = await this.transactionsRepository.getBalance();
         if (value > balance.total) {
           return new AppError('Excessive outcome');
