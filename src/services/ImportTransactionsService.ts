@@ -25,7 +25,7 @@ class ImportTransactionsService {
 
   async execute(file: Express.Multer.File): Promise<Transaction[]> {
     if (file) {
-      if (file.mimetype !== 'text/csv') {
+      if (!['text/csv', 'application/vnd.ms-excel'].includes(file.mimetype)) {
         await fs.promises.unlink(file.path);
         throw new AppError('Invalid file type.');
       }
